@@ -681,7 +681,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
 
                         //Rlog.v(RILJ_LOG_TAG, "Read packet: " + length + " bytes");
 
-                        processResponse(p);
+                        processResponse(p);  // recive parcel in socket ,this data from RIL gaokaidong  
                         p.recycle();
                     }
                 } catch (java.io.IOException ex) {
@@ -3106,7 +3106,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
                 mVoiceNetworkStateRegistrants
                     .notifyRegistrants(new AsyncResult(null, null, null));
             break;
-            case RIL_UNSOL_RESPONSE_NEW_SMS: {
+            case RIL_UNSOL_RESPONSE_NEW_SMS: { //new gsm sms gaokaidong
                 if (RILJ_LOGD) unsljLog(response);
 
                 mEventLog.writeRilNewSms(response);
@@ -3294,7 +3294,7 @@ public final class RIL extends BaseCommands implements CommandsInterface {
                 }
                 break;
 
-            case RIL_UNSOL_RESPONSE_CDMA_NEW_SMS:
+            case RIL_UNSOL_RESPONSE_CDMA_NEW_SMS:   //cdma sms recive gaokaidong
                 if (RILJ_LOGD) unsljLog(response);
 
                 mEventLog.writeRilNewSms(response);

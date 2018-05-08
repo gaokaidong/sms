@@ -47,7 +47,7 @@ public class GsmInboundSmsHandler extends InboundSmsHandler {
             Phone phone) {
         super("GsmInboundSmsHandler", context, storageMonitor, phone,
                 GsmCellBroadcastHandler.makeGsmCellBroadcastHandler(context, phone));
-        phone.mCi.setOnNewGsmSms(getHandler(), EVENT_NEW_SMS, null);
+        phone.mCi.setOnNewGsmSms(getHandler(), EVENT_NEW_SMS, null);   //set NEW_SMS message to getHandler 
         mDataDownloadHandler = new UsimDataDownloadHandler(phone.mCi);
     }
 

@@ -1,0 +1,73 @@
+短信协议分为 3GPP 和3GPP2
+分别对应GSM  和  CDMA
+
+短信收发都是通过modem来处理的。通过model发送到RIL层。
+由framework/opt/telephony/里的RIL.java处理。
+而在RIL.java中：
+RILReceiver内部类循环run，使用processResponse()在处理socket传过来的Parcel数据,
+发送短信的sms Parcel类型是：RESPONSE_SOLICITED
+接收短信的sms Parcel类型是：RESPONSE_UNSOLICITED
+在处理接收短信，走到了processUnsolicited：
+RIL_UNSOL_RESPONSE_NEW_SMS  ：3GPP  sms 接收 即GSM
+RIL_UNSOL_RESPONSE_CDMA_NEW_SMS ： 3GPP2 sms 接收 即CDMA
+在RIL_UNSOL_RESPONSE_NEW_SMS 该分支下面：
+	SmsMessage sms;   
+  	sms = SmsMessage.newFromCMT(a);   //将字符串封装成SmsMessage
+     if (mGsmSmsRegistrant != null) {
+          mGsmSmsRegistrant
+               .notifyRegistrant(new AsyncResult(null, sms, null));   
+     }
+RIL类继承于BaseCommands，在BaseCommands类中的setOnNewGsmSms中：
+ mGsmSmsRegistrant = new Registrant (h, what, obj);
+
+ Registrant的notifyRegistrant中直接调用了internalNotifyRegistrant (ar.result, ar.exception)方法；
+ 
+     void internalNotifyRegistrant (Object result, Throwable exception)
+ 	{
+        Handler h = getHandler();
+
+        if (h == null) {
+            clear();
+        } else {
+            Message msg = Message.obtain();
+
+            msg.what = what;
+            
+            msg.obj = new AsyncResult(userObj, result, exception);
+            
+            h.sendMessage(msg);
+        }
+    }
+
+    指定Handler去处理SmsMessage 对象。
+而在GsmInboundSmsHandler的构造方法中：
+phone.mCi.setOnNewGsmSms(getHandler(), EVENT_NEW_SMS, null);  //发送的类型是EVENT_NEW_SMS。
+
+GsmInboundSmsHandler 继承于InboundSmsHandler ，InboundSmsHandler 继承于StateMachine ；
+getHandler获取的是StateMachine内部维护的SmHandler：
+SmHandler的handleMessage方法中通过processMsg方法处理msg，而在processMsg中则体现了状态机(StateMachine)的精髓:
+The state machine defined here is a hierarchical state machine which processes messages and can have states arranged hierarchically.
+以上是状态机的官方解释，翻译：这里定义的状态机是一个处理消息的分层状态机，并且可以按照分层方式排列状态。
+主要意思就是一个状态是state对象，必须执行processMessage方法，还有可选的执行其他几个方法。一个状态机有几个子状态通过addState添加，
+SmHandle是消息处理派发和状态控制切换的核心。
+在InboundSmsHandler构造方法中：
+        addState(mDefaultState);
+        addState(mStartupState, mDefaultState);   //前面是子状态和父状态
+        addState(mIdleState, mDefaultState);
+        addState(mDeliveringState, mDefaultState);
+        addState(mWaitingState, mDeliveringState);
+
+        setInitialState(mStartupState);   //标识初始状态
+
+        有五个状态：DefaultState(抛出异常打印错误的默认状态)、StartupState(启动状态)、IdleState(空闲状态，等待消息处理)、DeliveringState(交付状态，PDU保存到原始表)、WaitingState(广播状态，等待当前完成后开始下一个)
+
+processMsg 中最主要的方法是：while (!curStateInfo.state.processMessage(msg)) {}   //根据栈调用state的processMessage方法。
+在DeliveringState的processMessage方法中，EVENT_NEW_SMS,调用handleNewSms((AsyncResult) msg.obj)，handleNewSms方法中调用了dispatchMessage()方法，
+dispatchMessage()中调用dispatchMessageRadioSpecific，这个方法是在子类中实现的，调用相应子类的dispatchMessageRadioSpecific方法即可，如果未处理，还会循环调用InboundSmsHandler的dispatchNormalMessage方法。
+
+
+
+
+
+
+

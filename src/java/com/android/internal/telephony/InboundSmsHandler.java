@@ -418,7 +418,7 @@ public abstract class InboundSmsHandler extends StateMachine {
             log("DeliveringState.processMessage:" + msg.what);
             switch (msg.what) {
                 case EVENT_NEW_SMS:
-                    // handle new SMS from RIL
+                    // handle new SMS from RIL gaokaidong
                     handleNewSms((AsyncResult) msg.obj);
                     sendMessage(EVENT_RETURN_TO_IDLE);
                     return HANDLED;

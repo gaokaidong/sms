@@ -281,7 +281,7 @@ public abstract class BaseCommands implements CommandsInterface {
     }
 
     @Override
-    public void setOnNewGsmSms(Handler h, int what, Object obj) {
+    public void setOnNewGsmSms(Handler h, int what, Object obj) {   //int gsm registrant  gaokaidong
         mGsmSmsRegistrant = new Registrant (h, what, obj);
     }
 
