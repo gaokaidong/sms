@@ -61,9 +61,122 @@ SmHandle是消息处理派发和状态控制切换的核心。
 
         有五个状态：DefaultState(抛出异常打印错误的默认状态)、StartupState(启动状态)、IdleState(空闲状态，等待消息处理)、DeliveringState(交付状态，PDU保存到原始表)、WaitingState(广播状态，等待当前完成后开始下一个)
 
-processMsg 中最主要的方法是：while (!curStateInfo.state.processMessage(msg)) {}   //根据栈调用state的processMessage方法。
+processMsg 中最主要的方法是：while (!curStateInfo.state.processMessage(msg)) {}   //根据栈调用state的processMessage方法中调用。
 在DeliveringState的processMessage方法中，EVENT_NEW_SMS,调用handleNewSms((AsyncResult) msg.obj)，handleNewSms方法中调用了dispatchMessage()方法，
-dispatchMessage()中调用dispatchMessageRadioSpecific，这个方法是在子类中实现的，调用相应子类的dispatchMessageRadioSpecific方法即可，如果未处理，还会循环调用InboundSmsHandler的dispatchNormalMessage方法。
+dispatchMessage()中调用dispatchMessageRadioSpecific，这个方法是在子类中实现的，调用相应子类的dispatchMessageRadioSpecific方法即可，如果未处理，最后调用InboundSmsHandler的dispatchNormalMessage方法。
+
+dispatchNormalMessage():
+InboundSmsTracker tracker = TelephonyComponentFactory.getInstance().makeInboundSmsTracker() //实例化一个InboundSmsTracker  
+                                                   //Tracker for an incoming SMS message ready to broadcast to listeners.
+return addTrackerToRawTableAndSendMessage(tracker,tracker.getDestPort() == -1 /* de-dup if text message */); //return -1 text sms,other data sms(短信彩信)
+
+addTrackerToRawTableAndSendMessage 判断addTrackerToRawTable(tracker, deDup)  
+destport 是端口号，如果没有目标端口getDestPort()=-1
+在判断addTrackerToRawTable 方法中 return RESULT_SMS_HANDLED
+在addTrackerToRawTableAndSendMessage方法中sendMessage(EVENT_BROADCAST_SMS, tracker)
+
+根据上述对于状态机的分析，在DeliveringState的processMessage方法中调用：
+                case EVENT_BROADCAST_SMS:
+                    InboundSmsTracker inboundSmsTracker = (InboundSmsTracker) msg.obj;
+                    if (processMessagePart(inboundSmsTracker)) {
+                        transitionTo(mWaitingState);   //广播被发送，切换下个状态
+                    }else{
+                        sendMessage(EVENT_RETURN_TO_IDLE);
+                    }
+                    return HANDLED;
+
+
+processMessagePart方法：正常的短信处理流程是processMessagePart方法return true，在该方法中调用：
+    SmsBroadcastReceiver resultReceiver = new SmsBroadcastReceiver(tracker);  //初始化 result receiver
+
+    if (!mUserManager.isUserUnlocked()) {      //如果用户锁定
+        return processMessagePartWithUserLocked(tracker, pdus, destPort);
+    }
+
+    if (BlockChecker.isBlocked(mContext, tracker.getAddress())) {   //如果电话号码被blocked
+        deleteFromRawTable(tracker.getDeleteWhere(), tracker.getDeleteWhereArgs(),
+                DELETE_PERMANENTLY);
+        return false;
+    }
+
+    boolean carrierAppInvoked = filterSmsWithCarrierOrSystemApp(     //使用运营商(carrier)或者system APP 过滤 SMS，没过滤返回false
+          pdus, destPort, tracker, resultReceiver, true /* userUnlocked */);
+
+    if (!carrierAppInvoked) {
+        dispatchSmsDeliveryIntent(pdus, tracker.getFormat(), destPort, resultReceiver);
+    }
+
+dispatchSmsDeliveryIntent：创建并将intent发送到默认的SMS应用程序或相应的端口(port)
+        Intent intent = new Intent();
+        intent.putExtra("pdus", pdus);
+        intent.putExtra("format", format);
+        if (destPort == -1) {
+            intent.setAction(Intents.SMS_DELIVER_ACTION);
+            ComponentName componentName = SmsApplication.getDefaultSmsApplication(mContext, true);  //是否指定默认SMS APP，没有的话componentName=null
+            intent.setComponent(componentName);
+            Uri uri = writeInboxMessage(intent);
+            intent.putExtra("uri", uri.toString());
+        }else{
+            intent.setAction(Intents.DATA_SMS_RECEIVED_ACTION); // A new data based SMS message
+            Uri uri = Uri.parse("sms://localhost:" + destPort);
+            intent.setData(uri);
+            intent.setComponent(null);
+        }
+
+        Bundle options = handleSmsWhitelisting(intent.getComponent());
+        dispatchIntent(intent, android.Manifest.permission.RECEIVE_SMS,
+                AppOpsManager.OP_RECEIVE_SMS, options, resultReceiver, UserHandle.SYSTEM);
+
+
+dispatchIntent:
+Dispatch the intent with the specified permission, appOp, and result receiver, using this state machine's handler thread to run the result receiver.
+翻译：使用此状态机的处理程序线程来运行result receiver，并使用指定的permission，appOp和result receiver来分发intent。
+
+        intent.addFlags(Intent.FLAG_RECEIVER_NO_ABORT);  //有序广播不可被接受者中断
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND); //接受器以前台优先级运行
+        SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());  //intent.putExtra 一些 sim卡相关的值
+        mContext.sendOrderedBroadcastAsUser(intent, user, permission, appOp, opts,  //UserHandle.SYSTEM
+                    resultReceiver, getHandler(), Activity.RESULT_OK, null, null);
+
+再到SmsBroadcastReceiver的onreceive方法：
+
+            String action = intent.getAction();
+            if (action.equals(Intents.SMS_DELIVER_ACTION)) {
+                intent.setAction(Intents.SMS_RECEIVED_ACTION);
+                intent.setComponent(null);
+                Bundle options = handleSmsWhitelisting(null);
+                dispatchIntent(intent, android.Manifest.permission.RECEIVE_SMS,
+                        AppOpsManager.OP_RECEIVE_SMS, options, this, UserHandle.ALL);  //所有拥有RECEIVE_SMS 权限的都将会收到SMS_RECEIVED广播
+
+
+showNewMessageNotification：该方法是接受完短信发送的系统通知方法：
+    private void showNewMessageNotification() {
+        // Do not show the notification on non-FBE devices.
+        if (!StorageManager.isFileEncryptedNativeOrEmulated()) {
+            return;
+        }
+        log("Show new message notification.");
+        Intent intent = Intent.makeMainSelectorActivity(
+            Intent.ACTION_MAIN, Intent.CATEGORY_APP_MESSAGING);
+        Notification.Builder mBuilder = new Notification.Builder(mContext)
+                .setSmallIcon(com.android.internal.R.drawable.sym_action_chat)
+                .setAutoCancel(true)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setDefaults(Notification.DEFAULT_ALL)
+                .setContentTitle(mContext.getString(R.string.new_sms_notification_title))
+                .setContentText(mContext.getString(R.string.new_sms_notification_content))
+                .setContentIntent(PendingIntent.getActivity(mContext, 1, intent, 0));
+        NotificationManager mNotificationManager =
+            (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+        mNotificationManager.notify(
+                NOTIFICATION_TAG, NOTIFICATION_ID_NEW_MESSAGE, mBuilder.build());
+    }
+
+
+
+
+ 
+
 
 
 
